@@ -1,0 +1,8 @@
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+FINAL TEST SET EVALUATION (2025) — DO NOT RETUNE
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+Baseline — APY: 198.3138% | Sharpe: 6.8223 | Trades: 1034 | WR: 40.0%
+LGBM     — APY: 205.5702% | Sharpe: 7.2960 | Trades: 615 | WR: 52.8%
+Delta    — APY: +7.2564% | Sharpe: +0.4737
+
+✓ TEST PASSED — improvement holds on unseen data. Safe to deploy.

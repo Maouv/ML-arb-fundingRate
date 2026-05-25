@@ -1,0 +1,175 @@
+============================================================
+FR Arbitrage ML Research Pipeline  [v2 — fixes #1 #2 #3]
+============================================================
+
+[1/5] Loading real FR data...
+  [MTLUSDT] Dropped 6 non-8h rows
+  [SOLUSDT] Dropped 101 non-8h rows
+
+[load_real] 441,341 rows loaded
+  Symbols : 100 coins
+  Range   : 2022-01-01 → 2026-04-30
+  FR stats (pct): mean=0.0035% | std=0.0388% | max=0.2278%
+  Entry-worthy (|FR| >= 0.05%): 3.1% of rows
+
+[coverage] 2 symbols flagged for gaps:
+ symbol  missing_pct  max_gap_settlements
+SOLUSDT         0.55                   27
+MTLUSDT         0.06                    4
+
+[align] Universe: 100 → 100 coins (dropped 0 with insufficient history)
+
+[2/5] Feature engineering + label v3 + split...
+[pipeline] Building features...
+[pipeline] Splitting full universe...
+[split] train:  185,341 rows | 2022-01-01 → 2023-12-29
+[split] val  :  109,100 rows | 2024-01-02 → 2024-12-31
+[split] test :  145,000 rows | 2025-01-02 → 2026-04-30
+[pipeline] Building labels v3 (bot simulation)...
+[pipeline] Entry candidates: 13,669 rows
+[pipeline] Dropped 104 rows with NaN features/labels
+[pipeline] Splitting entry candidates...
+[split] train:    4,577 rows | 2022-01-06 → 2023-12-29
+[split] val  :    5,586 rows | 2024-01-02 → 2024-12-31
+[split] test :    3,146 rows | 2025-01-06 → 2026-04-30
+[balance] train: 54.9% positive
+[balance] val: 81.7% positive
+[balance] test: 55.5% positive
+
+[3/5] Rule-based baseline (v2 — correct simulation)...
+  Val APY:    91.8476%
+  Val Sharpe: 4.2167
+  Val trades: 364
+  Win rate:   34.1%
+  Noise rate: 65.9%
+
+[4/5] LightGBM (trained on label v3, threshold on train holdout)...
+[LGBM] Walk-forward CV:
+  [fold 1] AUC=0.7500 | AP=0.7454 | best_iter=64
+  [fold 2] AUC=0.7531 | AP=0.7936 | best_iter=53
+  [fold 3] AUC=0.6944 | AP=0.7420 | best_iter=46
+  [CV] Recommended n_estimators: 53
+[LGBM] Training final model (n_estimators=53)...
+[LGBM] Tuning threshold on train holdout (not val)...
+[threshold] Precision-constrained tuning: threshold=0.3399 | precision=0.700 | recall=0.903
+[LGBM] Threshold used (train-tuned): 0.3399
+[LGBM] Val-optimal threshold (diagnostic only): 0.3145
+
+=======================================================
+[LGBM VAL]
+  AUC-ROC: 0.6477 | Avg Precision: 0.8464
+  Threshold: 0.3399
+  APY:       98.1380% | Sharpe: 4.4606
+  Win rate:  55.9% | Noise rate: 44.1%
+  Trades:    179 | Utilization: 20.2%
+
+  vs Baseline → ΔAPY: +6.2904% | ΔSharpe: +0.2439 | ΔNoise: -0.2180
+  → ✓ IMPROVEMENT
+
+  Top features:
+       feature  importance
+fr_roll_mean_M         132
+        fr_abs         105
+ fr_roll_std_M          96
+ fr_decay_rate          91
+    cs_n_above          84
+   fr_momentum          74
+
+[sanity LGBM] ✓ OK
+
+[4b] RF sanity check...
+[RF sanity] Training RF baseline...
+[RF sanity] Val AUC: 0.6714
+  LGBM AUC: 0.6477 | RF AUC: 0.6714 | Gap: -0.0238
+  ⚠ Gap < 0.03 — LGBM complexity not justified over RF
+
+[5/5] Results comparison...
+
+=======================================================
+STRATEGY COMPARISON — baseline vs lgbm
+=======================================================
+     metric  baseline     lgbm   delta
+    apy_pct   91.8476  98.1380 +6.2904
+     sharpe    4.2167   4.4606 +0.2439
+   win_rate    0.3407   0.5587 +0.2180
+   n_trades  364.0000 179.0000        
+avg_net_pct    0.2514   0.5463 +0.2949
+ noise_rate    0.6593   0.4413 -0.2180
+utilization    0.2597   0.2015 -0.0582
+
+Baseline by regime:
+ regime  n_periods  apy_pct  sharpe  utilization
+   LOW        876  14.0687  1.4085       0.1566
+NORMAL         85 347.8500  4.5990       0.9882
+  HIGH         15 494.8682  8.5440       0.9333
+STRESS        115 304.5569  9.0277       0.3536
+
+LGBM by regime:
+ regime  n_periods  apy_pct  sharpe  utilization
+   LOW        876  22.4044  2.2897       0.0974
+NORMAL         85 347.8500  4.5990       0.9882
+  HIGH         15 494.8682  8.5440       0.9333
+STRESS        115 299.4183  9.4716       0.2609
+
+=======================================================
+[STATISTICAL VALIDATION]
+=======================================================
+
+[1] Bootstrap CI (1000 resamples)...
+  APY 95% CI:    [65.6%, 142.1%]
+  Sharpe 95% CI: [10.82, 15.88]
+
+[2] Permutation test (500 shuffles)...
+  p-value: 0.0020 — ✓ SIGNIFICANT
+
+[3] Cost Monte Carlo (±30%, 500 sims)...
+  APY range:     [92.6%, 104.0%]
+  Sharpe (5th):  4.25
+  Win rate (5th): 52.5%
+  % sims profitable: 100%
+[charts] Saved PNGs → /kaggle/working/research_output/
+[ONNX] Saved model → /kaggle/working/research_output/lgbm_model.onnx
+[ONNX] Saved config → /kaggle/working/research_output/lgbm_model.json
+
+[Done] 590s | Results → /kaggle/working/research_output/
+
+=== SUMMARY JSON ===
+{
+  "baseline_val_apy": 91.8476,
+  "baseline_val_n_trades": 364,
+  "baseline_noise_rate": 0.6593,
+  "lgbm_val_apy": 98.138,
+  "lgbm_val_n_trades": 179,
+  "lgbm_noise_rate": 0.4413,
+  "lgbm_val_auc": 0.6476779564212894,
+  "rf_sanity_auc": 0.6714469909733495,
+  "auc_gap": -0.02376903455206003,
+  "lgbm_threshold": 0.33987180558074787,
+  "lgbm_warnings": [],
+  "statistical_validation": {
+    "bootstrap": {
+      "apy_lo": 65.6167735012603,
+      "apy_hi": 142.12753624702103,
+      "apy_median": 98.06246354491293,
+      "sharpe_lo": 10.822335921155327,
+      "sharpe_hi": 15.87737102503215,
+      "sharpe_median": 13.144463638134528
+    },
+    "permutation": {
+      "real_metric": 98.138,
+      "p_value": 0.001996007984031936,
+      "n_perms": 500,
+      "significant": true
+    },
+    "cost_mc": {
+      "apy_mean": 97.9092218,
+      "apy_5th": 92.615065,
+      "apy_95th": 103.974515,
+      "sharpe_mean": 4.4508572,
+      "sharpe_5th": 4.24969,
+      "win_rate_5th": 0.5251,
+      "pct_profitable": 100.0
+    }
+  },
+  "elapsed_seconds": 590.5
+}
