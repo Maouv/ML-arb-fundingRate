@@ -301,7 +301,6 @@ def prepare_dataset(
         with_labels = build_labels_v3(with_features, cost_tier=cost_tier)
         # Only train on entry candidates with valid label
         with_labels = with_labels[with_labels["label_is_entry"]].copy()
-        with_labels = with_labels.rename(columns={"label_v3": "label"})
         print(f"[pipeline] Entry candidates: {len(with_labels):,} rows")
     else:
         print("[pipeline] Building labels v1 (fr_forward_mean)...")

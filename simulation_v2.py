@@ -87,7 +87,7 @@ def simulate_bot(
     dict with performance metrics (APY, Sharpe, win_rate, n_trades, avg_net_pct, ...)
     """
     df = df.copy().reset_index(drop=True)
-    df["_sig"] = entry_signals.astype(bool)
+    df["entry_sig"] = entry_signals.astype(bool)
 
     # Build per-timestamp FR lookup: {timestamp: {symbol: fr_pct}}
     # Using dict-of-dicts for O(1) lookup in hot loop
@@ -104,7 +104,7 @@ def simulate_bot(
             ts_sig[ts] = set()
 
         ts_fr[ts][sym] = fr
-        if row._sig:  # noqa: SLF001 — itertuples field name
+        if row.entry_sig:
             ts_sig[ts].add(sym)
 
     timestamps = sorted(ts_fr.keys())
