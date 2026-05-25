@@ -198,6 +198,8 @@ class FundingRateLGBM:
         except ImportError:
             raise ImportError("pip install lightgbm")
 
+        from threshold_tuner import extract_last_cv_fold, tune_threshold_on_train
+
         n_estimators = LGBM_CONFIG["n_estimators"]
 
         if run_cv:
@@ -212,10 +214,17 @@ class FundingRateLGBM:
         self.model.fit(X_train, y_train)
         self.feature_importances_ = self.model.feature_importances_
 
+        # Fix #3: tune threshold on last CV fold of TRAIN — never on val set
+        print("[LGBM] Tuning threshold on train holdout (not val)...")
+        _, _, X_tune, y_tune = extract_last_cv_fold(train_df, X_train, y_train)
+        self.threshold = tune_threshold_on_train(self.model, X_tune, y_tune)
+
+        # Diagnostic only — do NOT use y_val to adjust anything
         if X_val is not None and y_val is not None:
             val_proba = self.model.predict_proba(X_val)[:, 1]
-            self.threshold = find_optimal_threshold(y_val, val_proba)
-            print(f"[LGBM] Optimal threshold (val): {self.threshold:.4f}")
+            val_threshold_for_info = find_optimal_threshold(y_val, val_proba)
+            print(f"[LGBM] Threshold used (train-tuned): {self.threshold:.4f}")
+            print(f"[LGBM] Val-optimal threshold (diagnostic only): {val_threshold_for_info:.4f}")
 
         return self
 
@@ -288,17 +297,17 @@ def evaluate_lgbm(
     split_name:       str,
     feature_names:    list[str],
     baseline_metrics: dict | None = None,
+    cost_tier:        str = "mid",
 ) -> dict:
     from sklearn.metrics import average_precision_score, roc_auc_score
-
-    from baseline_rule import simulate_strategy
+    from simulation_v2 import simulate_bot
 
     proba = model.predict_proba(X)
     auc   = roc_auc_score(y, proba) if len(np.unique(y)) > 1 else float("nan")
     ap    = average_precision_score(y, proba)
 
     combined = model.combined_signal(X, df)
-    sim      = simulate_strategy(df, combined, strategy_name=f"lgbm_{split_name}")
+    sim      = simulate_bot(df, combined, cost_tier=cost_tier, strategy_name=f"lgbm_{split_name}")
 
     fi = model.feature_importance_df(feature_names)
 
@@ -306,24 +315,26 @@ def evaluate_lgbm(
     print(f"[LGBM {split_name.upper()}]")
     print(f"  AUC-ROC: {auc:.4f} | Avg Precision: {ap:.4f}")
     print(f"  Threshold: {model.threshold:.4f}")
-    print(f"  APY proxy: {sim['apy_proxy_pct']:.4f}% | Sharpe: {sim['sharpe_proxy']:.4f}")
-    print(f"  Win rate: {sim['win_rate']:.1%} | Utilization: {sim['utilization']:.1%}")
+    print(f"  APY:       {sim['apy_pct']:.4f}% | Sharpe: {sim['sharpe']:.4f}")
+    print(f"  Win rate:  {sim['win_rate']:.1%} | Noise rate: {sim['noise_rate']:.1%}")
+    print(f"  Trades:    {sim['n_trades']} | Utilization: {sim['utilization']:.1%}")
 
     if baseline_metrics:
-        d_apy    = sim["apy_proxy_pct"]  - baseline_metrics.get("apy_proxy_pct", 0)
-        d_sharpe = sim["sharpe_proxy"]   - baseline_metrics.get("sharpe_proxy", 0)
+        d_apy    = sim["apy_pct"]  - baseline_metrics.get("apy_pct", 0)
+        d_sharpe = sim["sharpe"]   - baseline_metrics.get("sharpe", 0)
+        d_noise  = sim["noise_rate"] - baseline_metrics.get("noise_rate", 0)
         improved = d_apy > 0 and d_sharpe > 0
-        print(f"\n  vs Baseline → ΔAPY: {d_apy:+.4f}% | ΔSharpe: {d_sharpe:+.4f}")
+        print(f"\n  vs Baseline → ΔAPY: {d_apy:+.4f}% | ΔSharpe: {d_sharpe:+.4f} | ΔNoise: {d_noise:+.4f}")
         print(f"  → {'✓ IMPROVEMENT' if improved else '✗ NO IMPROVEMENT'}")
 
     print(f"\n  Top features:")
     print(fi.head(6).to_string(index=False))
 
     return {
-        "sim_metrics":       sim,
-        "auc":               auc,
-        "avg_precision":     ap,
+        "sim_metrics":        sim,
+        "auc":                auc,
+        "avg_precision":      ap,
         "feature_importance": fi,
-        "combined_signal":   combined,
+        "combined_signal":    combined,
     }
 
