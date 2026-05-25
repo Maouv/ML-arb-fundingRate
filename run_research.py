@@ -365,20 +365,39 @@ def evaluate_on_test(results: dict, cost_tier: str = "mid") -> dict:
     ds         = results["dataset"]
     lgbm_model = results["lgbm_model"]
     X_test, y_test, test_df = ds["X_test"], ds["y_test"], ds["test_df"]
+    full_test_df = ds["full_test_df"]
 
     print("\n" + "!" * 55)
     print("FINAL TEST SET EVALUATION (2025) — DO NOT RETUNE")
     print("!" * 55)
 
-    baseline_test = run_baseline_v2(test_df, "test", cost_tier=cost_tier)
-    lgbm_sig      = lgbm_model.combined_signal(X_test, test_df)
-    lgbm_test_sim = simulate_bot(test_df, lgbm_sig, cost_tier=cost_tier, strategy_name="lgbm_test")
+    # Full universe for simulation
+    full_test_df = label_market_regime(full_test_df)
+
+    baseline_test = run_baseline_v2(full_test_df, "test", cost_tier=cost_tier)
+
+    # Map LGBM signal to full universe
+    entry_sig = lgbm_model.combined_signal(X_test, test_df)
+    sig = np.zeros(len(full_test_df), dtype=int)
+    entry_lookup = {}
+    for i, (ts, sym) in enumerate(zip(test_df["timestamp"], test_df["symbol"])):
+        entry_lookup[(ts, sym)] = entry_sig[i]
+    for i, (ts, sym) in enumerate(zip(full_test_df["timestamp"], full_test_df["symbol"])):
+        if (ts, sym) in entry_lookup:
+            sig[i] = entry_lookup[(ts, sym)]
+
+    lgbm_test_sim = simulate_bot(full_test_df, sig, cost_tier=cost_tier, strategy_name="lgbm_test")
 
     delta_apy    = lgbm_test_sim["apy_pct"] - baseline_test["apy_pct"]
     delta_sharpe = lgbm_test_sim["sharpe"]  - baseline_test["sharpe"]
-    print(f"Baseline — APY: {baseline_test['apy_pct']:.4f}% | Sharpe: {baseline_test['sharpe']:.4f} | Trades: {baseline_test['n_trades']}")
-    print(f"LGBM     — APY: {lgbm_test_sim['apy_pct']:.4f}% | Sharpe: {lgbm_test_sim['sharpe']:.4f} | Trades: {lgbm_test_sim['n_trades']}")
+    print(f"Baseline — APY: {baseline_test['apy_pct']:.4f}% | Sharpe: {baseline_test['sharpe']:.4f} | Trades: {baseline_test['n_trades']} | WR: {baseline_test['win_rate']:.1%}")
+    print(f"LGBM     — APY: {lgbm_test_sim['apy_pct']:.4f}% | Sharpe: {lgbm_test_sim['sharpe']:.4f} | Trades: {lgbm_test_sim['n_trades']} | WR: {lgbm_test_sim['win_rate']:.1%}")
     print(f"Delta    — APY: {delta_apy:+.4f}% | Sharpe: {delta_sharpe:+.4f}")
+
+    if delta_apy > 0 and delta_sharpe > 0:
+        print("\n✓ TEST PASSED — improvement holds on unseen data. Safe to deploy.")
+    else:
+        print("\n✗ TEST FAILED — improvement does NOT generalize. Do NOT deploy.")
 
     return {"baseline": baseline_test, "lgbm": lgbm_test_sim}
 
