@@ -1,0 +1,15 @@
+feature,importance
+fr_roll_mean_M,132
+fr_abs,105
+fr_roll_std_M,96
+fr_decay_rate,91
+cs_n_above,84
+fr_momentum,74
+fr_zscore_M,63
+n_consecutive_above,44
+dow_sin,28
+cs_rank,22
+hour_sin,15
+dow_cos,13
+fr_sign,5
+hour_cos,0

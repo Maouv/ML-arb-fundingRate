@@ -1,0 +1,39 @@
+{
+  "baseline_val_apy": 91.8476,
+  "baseline_val_n_trades": 364,
+  "baseline_noise_rate": 0.6593,
+  "lgbm_val_apy": 98.138,
+  "lgbm_val_n_trades": 179,
+  "lgbm_noise_rate": 0.4413,
+  "lgbm_val_auc": 0.6476779564212894,
+  "rf_sanity_auc": 0.6714469909733495,
+  "auc_gap": -0.02376903455206003,
+  "lgbm_threshold": 0.33987180558074787,
+  "lgbm_warnings": [],
+  "statistical_validation": {
+    "bootstrap": {
+      "apy_lo": 64.77191907504582,
+      "apy_hi": 135.5631110867323,
+      "apy_median": 96.82796596471127,
+      "sharpe_lo": 10.749358105074313,
+      "sharpe_hi": 15.938795427834291,
+      "sharpe_median": 13.120406884215782
+    },
+    "permutation": {
+      "real_metric": 98.138,
+      "p_value": 0.001996007984031936,
+      "n_perms": 500,
+      "significant": true
+    },
+    "cost_mc": {
+      "apy_mean": 98.33579020000002,
+      "apy_5th": 92.651535,
+      "apy_95th": 104.06274499999999,
+      "sharpe_mean": 4.4670922,
+      "sharpe_5th": 4.2511849999999995,
+      "win_rate_5th": 0.5251,
+      "pct_profitable": 100.0
+    }
+  },
+  "elapsed_seconds": 562.7
+}
