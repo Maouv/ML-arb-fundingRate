@@ -295,6 +295,10 @@ def prepare_dataset(
     print("[pipeline] Building features...")
     with_features = build_features(df)
 
+    # Split full universe BEFORE filtering (needed for simulation exit logic)
+    print("[pipeline] Splitting full universe...")
+    full_train_df, full_val_df, full_test_df = temporal_split(with_features)
+
     if use_label_v3:
         print("[pipeline] Building labels v3 (bot simulation)...")
         from label_builder import build_labels_v3, label_stats
@@ -313,7 +317,7 @@ def prepare_dataset(
     with_labels = with_labels.dropna(subset=drop_cols)
     print(f"[pipeline] Dropped {before - len(with_labels):,} rows with NaN features/labels")
 
-    print("[pipeline] Splitting...")
+    print("[pipeline] Splitting entry candidates...")
     train_df, val_df, test_df = temporal_split(with_labels)
 
     # Class balance check
@@ -336,6 +340,7 @@ def prepare_dataset(
         "y_val":   val_df["label"].values,
         "y_test":  test_df["label"].values,
         "train_df": train_df, "val_df": val_df, "test_df": test_df,
+        "full_train_df": full_train_df, "full_val_df": full_val_df, "full_test_df": full_test_df,
         "scaler": scaler,
         "feature_names": feature_cols,
     }

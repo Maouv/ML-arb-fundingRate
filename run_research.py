@@ -23,7 +23,7 @@ import pandas as pd
 
 from data_loader import FEATURE_COLS, prepare_dataset
 from data_loader_real import align_universe, load_real_fr_data
-from model_lgbm import FundingRateLGBM, evaluate_lgbm, run_rf_sanity_check
+from model_lgbm import FundingRateLGBM, run_rf_sanity_check
 from simulation_v2 import (
     compare_strategies,
     rule_signal,
@@ -118,20 +118,23 @@ def run_full_comparison(
     y_train, y_val   = ds["y_train"], ds["y_val"]
     train_df, val_df = ds["train_df"], ds["val_df"]
 
-    # Add regime labels (uses full universe df for regime classification)
-    # Build full_df from original raw for regime context
-    combined_df = label_market_regime(pd.concat([train_df, val_df], ignore_index=True))
-    train_ts_set = set(train_df["timestamp"].unique())
-    val_ts_set   = set(val_df["timestamp"].unique())
-    train_df = combined_df[combined_df["timestamp"].isin(train_ts_set)].copy()
-    val_df   = combined_df[combined_df["timestamp"].isin(val_ts_set)].copy()
+    # Full universe splits (all rows, not just entry candidates) — for simulation
+    full_train_df = ds["full_train_df"]
+    full_val_df   = ds["full_val_df"]
+
+    # Add regime labels to full dfs
+    combined_full = label_market_regime(pd.concat([full_train_df, full_val_df], ignore_index=True))
+    full_train_ts = set(full_train_df["timestamp"].unique())
+    full_val_ts   = set(full_val_df["timestamp"].unique())
+    full_train_df = combined_full[combined_full["timestamp"].isin(full_train_ts)].copy()
+    full_val_df   = combined_full[combined_full["timestamp"].isin(full_val_ts)].copy()
 
     all_results: dict[str, dict] = {}
 
     # ── 3. Baseline v2 (corrected simulation) ──
     print("\n[3/5] Rule-based baseline (v2 — correct simulation)...")
-    baseline_train = run_baseline_v2(train_df, "train", cost_tier=cost_tier)
-    baseline_val   = run_baseline_v2(val_df,   "val",   cost_tier=cost_tier)
+    baseline_train = run_baseline_v2(full_train_df, "train", cost_tier=cost_tier)
+    baseline_val   = run_baseline_v2(full_val_df,   "val",   cost_tier=cost_tier)
     all_results["baseline"] = {"sim_metrics": baseline_val, "auc": "n/a"}
     print(f"  Val APY:    {baseline_val['apy_pct']:.4f}%")
     print(f"  Val Sharpe: {baseline_val['sharpe']:.4f}")
@@ -144,18 +147,63 @@ def run_full_comparison(
     lgbm_model = FundingRateLGBM()
     lgbm_model.fit(X_train, y_train, train_df, X_val, y_val, run_cv=True)
 
-    lgbm_train_sig = lgbm_model.combined_signal(X_train, train_df)
-    lgbm_train_sim = simulate_bot(train_df, lgbm_train_sig, cost_tier=cost_tier, strategy_name="lgbm_train")
+    # Build LGBM signal on full universe: ML predicts on entry candidates, rest = 0
+    def build_full_signal(model, X_entry, entry_df, full_df):
+        """Map ML signal from entry-only rows back to full universe."""
+        sig = np.zeros(len(full_df), dtype=int)
+        # Get combined signal for entry candidates
+        entry_sig = model.combined_signal(X_entry, entry_df)
+        # Map back using (timestamp, symbol) as key
+        entry_keys = set(zip(entry_df["timestamp"], entry_df["symbol"]))
+        full_keys = list(zip(full_df["timestamp"], full_df["symbol"]))
+        # Build lookup: (ts, sym) → signal value
+        entry_lookup = {}
+        for i, (ts, sym) in enumerate(zip(entry_df["timestamp"], entry_df["symbol"])):
+            entry_lookup[(ts, sym)] = entry_sig[i]
+        for i, key in enumerate(full_keys):
+            if key in entry_lookup:
+                sig[i] = entry_lookup[key]
+        return sig
 
-    lgbm_eval = evaluate_lgbm(
-        lgbm_model, X_val, y_val, val_df,
-        split_name="val",
-        feature_names=ds["feature_names"],
-        baseline_metrics=baseline_val,
-        cost_tier=cost_tier,
-    )
+    lgbm_train_sig = build_full_signal(lgbm_model, X_train, train_df, full_train_df)
+    lgbm_train_sim = simulate_bot(full_train_df, lgbm_train_sig, cost_tier=cost_tier, strategy_name="lgbm_train")
+
+    lgbm_val_sig = build_full_signal(lgbm_model, X_val, val_df, full_val_df)
+    lgbm_val_sim = simulate_bot(full_val_df, lgbm_val_sig, cost_tier=cost_tier, strategy_name="lgbm_val")
+
+    # Compute AUC/AP on entry candidates only (where we have labels)
+    from sklearn.metrics import average_precision_score, roc_auc_score
+    proba = lgbm_model.predict_proba(X_val)
+    lgbm_auc = roc_auc_score(y_val, proba) if len(np.unique(y_val)) > 1 else float("nan")
+    lgbm_ap  = average_precision_score(y_val, proba)
+    fi = lgbm_model.feature_importance_df(ds["feature_names"])
+
+    print(f"\n{'='*55}")
+    print(f"[LGBM VAL]")
+    print(f"  AUC-ROC: {lgbm_auc:.4f} | Avg Precision: {lgbm_ap:.4f}")
+    print(f"  Threshold: {lgbm_model.threshold:.4f}")
+    print(f"  APY:       {lgbm_val_sim['apy_pct']:.4f}% | Sharpe: {lgbm_val_sim['sharpe']:.4f}")
+    print(f"  Win rate:  {lgbm_val_sim['win_rate']:.1%} | Noise rate: {lgbm_val_sim['noise_rate']:.1%}")
+    print(f"  Trades:    {lgbm_val_sim['n_trades']} | Utilization: {lgbm_val_sim['utilization']:.1%}")
+
+    d_apy    = lgbm_val_sim["apy_pct"]    - baseline_val.get("apy_pct", 0)
+    d_sharpe = lgbm_val_sim["sharpe"]      - baseline_val.get("sharpe", 0)
+    d_noise  = lgbm_val_sim["noise_rate"]  - baseline_val.get("noise_rate", 0)
+    improved = d_apy > 0 and d_sharpe > 0
+    print(f"\n  vs Baseline → ΔAPY: {d_apy:+.4f}% | ΔSharpe: {d_sharpe:+.4f} | ΔNoise: {d_noise:+.4f}")
+    print(f"  → {'✓ IMPROVEMENT' if improved else '✗ NO IMPROVEMENT'}")
+    print(f"\n  Top features:")
+    print(fi.head(6).to_string(index=False))
+
+    lgbm_eval = {
+        "sim_metrics":        lgbm_val_sim,
+        "auc":                lgbm_auc,
+        "avg_precision":      lgbm_ap,
+        "feature_importance": fi,
+        "combined_signal":    lgbm_val_sig,
+    }
     all_results["lgbm"] = lgbm_eval
-    lgbm_warnings = run_sanity_checks(lgbm_train_sim, lgbm_eval["sim_metrics"], "LGBM")
+    lgbm_warnings = run_sanity_checks(lgbm_train_sim, lgbm_val_sim, "LGBM")
 
     # ── 4b. RF sanity ──
     print("\n[4b] RF sanity check...")
@@ -173,10 +221,9 @@ def run_full_comparison(
     compare_strategies(baseline_val, lgbm_eval["sim_metrics"])
 
     # Regime breakdown
-    baseline_sig_val = rule_signal(val_df)
-    lgbm_sig_val     = lgbm_eval["combined_signal"]
-    regime_bl   = regime_breakdown(val_df, baseline_sig_val, "baseline")
-    regime_lgbm = regime_breakdown(val_df, lgbm_sig_val,     "lgbm")
+    baseline_sig_val = rule_signal(full_val_df)
+    regime_bl   = regime_breakdown(full_val_df, baseline_sig_val, "baseline")
+    regime_lgbm = regime_breakdown(full_val_df, lgbm_val_sig,     "lgbm")
     print("\nBaseline by regime:\n", regime_bl.to_string(index=False))
     print("\nLGBM by regime:\n",     regime_lgbm.to_string(index=False))
 
