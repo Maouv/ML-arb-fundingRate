@@ -272,27 +272,51 @@ def apply_scaler(
 
 # ── Full Pipeline ─────────────────────────────────────────────────────────────
 
+def prepare_full_splits(
+    df: pd.DataFrame,
+    feature_cols: list[str] = FEATURE_COLS,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Build features on ALL rows, split by time. Used for simulation (not training)."""
+    with_features = build_features(df)
+    with_features = with_features.dropna(subset=feature_cols)
+    return temporal_split(with_features)
+
+
 def prepare_dataset(
     df: pd.DataFrame,
     feature_cols: list[str] = FEATURE_COLS,
+    cost_tier: str = "mid",
+    use_label_v3: bool = True,
 ) -> dict:
     """
     Full pipeline: features → labels → split → scale.
 
     Parameters
     ----------
-    df : output of load_real_fr_data() — must have columns:
-         timestamp, symbol, funding_rate, funding_rate_pct
+    df           : output of load_real_fr_data() — columns:
+                   timestamp, symbol, funding_rate, funding_rate_pct
+    feature_cols : feature columns to use
+    cost_tier    : cost tier for label v3 simulation ("low"|"mid"|"high")
+    use_label_v3 : if True, use bot-simulation labels (recommended);
+                   if False, fall back to label v1 (fr_forward_mean threshold)
 
     Returns dict with X_train/val/test, y arrays, raw DataFrames, scaler.
     """
     print("[pipeline] Building features...")
     with_features = build_features(df)
 
-    print("[pipeline] Building labels...")
-    with_labels = build_labels(with_features)
+    if use_label_v3:
+        print("[pipeline] Building labels v3 (bot simulation)...")
+        from label_builder import build_labels_v3, label_stats
+        with_labels = build_labels_v3(with_features, cost_tier=cost_tier)
+        with_labels = with_labels[with_labels["label_is_entry"]].copy()
+        with_labels = with_labels.rename(columns={"label_v3": "label"})
+        print(f"[pipeline] Entry candidates: {len(with_labels):,} rows")
+    else:
+        print("[pipeline] Building labels v1 (fr_forward_mean)...")
+        with_labels = build_labels(with_features)
 
-    # Drop rows where label or any feature couldn't be computed
+    # Drop rows where any feature couldn't be computed
     drop_cols = ["label"] + feature_cols
     before = len(with_labels)
     with_labels = with_labels.dropna(subset=drop_cols)
@@ -301,7 +325,7 @@ def prepare_dataset(
     print("[pipeline] Splitting...")
     train_df, val_df, test_df = temporal_split(with_labels)
 
-    # Class balance check — warn if severely skewed
+    # Class balance check
     for name, split in [("train", train_df), ("val", val_df), ("test", test_df)]:
         pos_rate = split["label"].mean()
         print(f"[balance] {name}: {pos_rate:.1%} positive", end="")
@@ -320,9 +344,6 @@ def prepare_dataset(
         "y_train": train_df["label"].values,
         "y_val":   val_df["label"].values,
         "y_test":  test_df["label"].values,
-        "y_cont_train": train_df["label_continuous"].values,
-        "y_cont_val":   val_df["label_continuous"].values,
-        "y_cont_test":  test_df["label_continuous"].values,
         "train_df": train_df, "val_df": val_df, "test_df": test_df,
         "scaler": scaler,
         "feature_names": feature_cols,
