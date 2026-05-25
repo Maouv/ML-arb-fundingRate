@@ -272,6 +272,16 @@ def apply_scaler(
 
 # ── Full Pipeline ─────────────────────────────────────────────────────────────
 
+def prepare_full_splits(
+    df: pd.DataFrame,
+    feature_cols: list[str] = FEATURE_COLS,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Build features on ALL rows, split by time. Used for simulation (not training)."""
+    with_features = build_features(df)
+    with_features = with_features.dropna(subset=feature_cols)
+    return temporal_split(with_features)
+
+
 def prepare_dataset(
     df: pd.DataFrame,
     feature_cols: list[str] = FEATURE_COLS,
@@ -301,7 +311,6 @@ def prepare_dataset(
         with_labels = build_labels_v3(with_features, cost_tier=cost_tier)
         # Only train on entry candidates with valid label
         with_labels = with_labels[with_labels["label_is_entry"]].copy()
-        with_labels = with_labels.rename(columns={"label_v3": "label"})
         print(f"[pipeline] Entry candidates: {len(with_labels):,} rows")
     else:
         print("[pipeline] Building labels v1 (fr_forward_mean)...")

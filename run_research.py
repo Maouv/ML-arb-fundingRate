@@ -21,7 +21,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from data_loader import FEATURE_COLS, prepare_dataset
+from data_loader import FEATURE_COLS, prepare_dataset, prepare_full_splits
 from data_loader_real import align_universe, load_real_fr_data
 from model_lgbm import FundingRateLGBM, evaluate_lgbm, run_rf_sanity_check
 from simulation_v2 import (
@@ -30,6 +30,31 @@ from simulation_v2 import (
     run_baseline_v2,
     simulate_bot,
 )
+
+
+# ── Signal Builder (entry candidates → full df signal) ───────────────────────
+
+def _build_full_signal(
+    model: FundingRateLGBM,
+    entry_df: pd.DataFrame,
+    X_entry: np.ndarray,
+    full_df: pd.DataFrame,
+    feature_cols: list[str],
+    scaler,
+) -> np.ndarray:
+    """
+    Map LGBM predictions (on entry candidates) back to full df.
+    Non-entry rows get signal=0. Entry rows get rule & lgbm signal.
+    """
+    from data_loader import ENTRY_THRESHOLD_PCT, apply_scaler
+    signal = np.zeros(len(full_df), dtype=int)
+    entry_mask = (full_df["fr_abs"] >= ENTRY_THRESHOLD_PCT).values
+    if entry_mask.sum() == 0:
+        return signal
+    X_full_entries = apply_scaler(full_df[entry_mask], scaler, feature_cols)
+    lgbm_preds = model.predict(X_full_entries).astype(bool)
+    signal[entry_mask] = lgbm_preds.astype(int)
+    return signal
 
 
 # ── Regime Labeler ────────────────────────────────────────────────────────────
@@ -118,20 +143,22 @@ def run_full_comparison(
     y_train, y_val   = ds["y_train"], ds["y_val"]
     train_df, val_df = ds["train_df"], ds["val_df"]
 
-    # Add regime labels (uses full universe df for regime classification)
-    # Build full_df from original raw for regime context
-    combined_df = label_market_regime(pd.concat([train_df, val_df], ignore_index=True))
-    train_ts_set = set(train_df["timestamp"].unique())
-    val_ts_set   = set(val_df["timestamp"].unique())
-    train_df = combined_df[combined_df["timestamp"].isin(train_ts_set)].copy()
-    val_df   = combined_df[combined_df["timestamp"].isin(val_ts_set)].copy()
+    # Full splits for simulation (all rows, not entry-only)
+    train_full_df, val_full_df, test_full_df = prepare_full_splits(raw, feature_cols)
+
+    # Add regime labels on full val
+    combined_df = label_market_regime(pd.concat([train_full_df, val_full_df], ignore_index=True))
+    train_ts_set = set(train_full_df["timestamp"].unique())
+    val_ts_set   = set(val_full_df["timestamp"].unique())
+    train_full_df = combined_df[combined_df["timestamp"].isin(train_ts_set)].copy()
+    val_full_df   = combined_df[combined_df["timestamp"].isin(val_ts_set)].copy()
 
     all_results: dict[str, dict] = {}
 
     # ── 3. Baseline v2 (corrected simulation) ──
     print("\n[3/5] Rule-based baseline (v2 — correct simulation)...")
-    baseline_train = run_baseline_v2(train_df, "train", cost_tier=cost_tier)
-    baseline_val   = run_baseline_v2(val_df,   "val",   cost_tier=cost_tier)
+    baseline_train = run_baseline_v2(train_full_df, "train", cost_tier=cost_tier)
+    baseline_val   = run_baseline_v2(val_full_df,   "val",   cost_tier=cost_tier)
     all_results["baseline"] = {"sim_metrics": baseline_val, "auc": "n/a"}
     print(f"  Val APY:    {baseline_val['apy_pct']:.4f}%")
     print(f"  Val Sharpe: {baseline_val['sharpe']:.4f}")
@@ -142,17 +169,19 @@ def run_full_comparison(
     # ── 4. LGBM (train only on entry candidates with label v3) ──
     print("\n[4/5] LightGBM (trained on label v3, threshold on train holdout)...")
     lgbm_model = FundingRateLGBM()
-    lgbm_model.fit(X_train, y_train, train_df, X_val, y_val, run_cv=True)
+    lgbm_model.fit(X_train, y_train, ds["train_df"], X_val, y_val, run_cv=True)
 
-    lgbm_train_sig = lgbm_model.combined_signal(X_train, train_df)
-    lgbm_train_sim = simulate_bot(train_df, lgbm_train_sig, cost_tier=cost_tier, strategy_name="lgbm_train")
+    lgbm_train_sig = _build_full_signal(lgbm_model, ds["train_df"], X_train, train_full_df, feature_cols, ds["scaler"])
+    lgbm_train_sim = simulate_bot(train_full_df, lgbm_train_sig, cost_tier=cost_tier, strategy_name="lgbm_train")
 
     lgbm_eval = evaluate_lgbm(
-        lgbm_model, X_val, y_val, val_df,
+        lgbm_model, X_val, y_val, ds["val_df"],
+        val_full_df=val_full_df,
         split_name="val",
         feature_names=ds["feature_names"],
         baseline_metrics=baseline_val,
         cost_tier=cost_tier,
+        scaler=ds["scaler"],
     )
     all_results["lgbm"] = lgbm_eval
     lgbm_warnings = run_sanity_checks(lgbm_train_sim, lgbm_eval["sim_metrics"], "LGBM")
@@ -173,10 +202,10 @@ def run_full_comparison(
     compare_strategies(baseline_val, lgbm_eval["sim_metrics"])
 
     # Regime breakdown
-    baseline_sig_val = rule_signal(val_df)
+    baseline_sig_val = rule_signal(val_full_df)
     lgbm_sig_val     = lgbm_eval["combined_signal"]
-    regime_bl   = regime_breakdown(val_df, baseline_sig_val, "baseline")
-    regime_lgbm = regime_breakdown(val_df, lgbm_sig_val,     "lgbm")
+    regime_bl   = regime_breakdown(val_full_df, baseline_sig_val, "baseline")
+    regime_lgbm = regime_breakdown(val_full_df, lgbm_sig_val,     "lgbm")
     print("\nBaseline by regime:\n", regime_bl.to_string(index=False))
     print("\nLGBM by regime:\n",     regime_lgbm.to_string(index=False))
 

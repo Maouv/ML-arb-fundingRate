@@ -298,6 +298,8 @@ def evaluate_lgbm(
     feature_names:    list[str],
     baseline_metrics: dict | None = None,
     cost_tier:        str = "mid",
+    val_full_df:      pd.DataFrame | None = None,
+    scaler=None,
 ) -> dict:
     from sklearn.metrics import average_precision_score, roc_auc_score
     from simulation_v2 import simulate_bot
@@ -306,25 +308,34 @@ def evaluate_lgbm(
     auc   = roc_auc_score(y, proba) if len(np.unique(y)) > 1 else float("nan")
     ap    = average_precision_score(y, proba)
 
-    combined = model.combined_signal(X, df)
-    sim      = simulate_bot(df, combined, cost_tier=cost_tier, strategy_name=f"lgbm_{split_name}")
+    # Simulate on full val df if provided, else fall back to entry-only df
+    if val_full_df is not None and scaler is not None:
+        from run_research import _build_full_signal
+        from data_loader import FEATURE_COLS
+        cols = feature_names if feature_names else FEATURE_COLS
+        combined = _build_full_signal(model, df, X, val_full_df, cols, scaler)
+        sim_df = val_full_df
+    else:
+        combined = model.combined_signal(X, df)
+        sim_df = df
 
-    fi = model.feature_importance_df(feature_names)
+    sim = simulate_bot(sim_df, combined, cost_tier=cost_tier, strategy_name=f"lgbm_{split_name}")
+    fi  = model.feature_importance_df(feature_names)
 
     print(f"\n{'='*55}")
     print(f"[LGBM {split_name.upper()}]")
     print(f"  AUC-ROC: {auc:.4f} | Avg Precision: {ap:.4f}")
     print(f"  Threshold: {model.threshold:.4f}")
-    print(f"  APY:       {sim['apy_pct']:.4f}% | Sharpe: {sim['sharpe']:.4f}")
-    print(f"  Win rate:  {sim['win_rate']:.1%} | Noise rate: {sim['noise_rate']:.1%}")
-    print(f"  Trades:    {sim['n_trades']} | Utilization: {sim['utilization']:.1%}")
+    print(f"  APY: {sim['apy_pct']:.4f}% | Sharpe: {sim['sharpe']:.4f}")
+    print(f"  Win rate: {sim['win_rate']:.1%} | Noise rate: {sim['noise_rate']:.1%}")
+    print(f"  Trades: {sim['n_trades']} | Utilization: {sim['utilization']:.1%}")
 
     if baseline_metrics:
-        d_apy    = sim["apy_pct"]  - baseline_metrics.get("apy_pct", 0)
-        d_sharpe = sim["sharpe"]   - baseline_metrics.get("sharpe", 0)
+        d_apy    = sim["apy_pct"]    - baseline_metrics.get("apy_pct", 0)
+        d_sharpe = sim["sharpe"]     - baseline_metrics.get("sharpe", 0)
         d_noise  = sim["noise_rate"] - baseline_metrics.get("noise_rate", 0)
         improved = d_apy > 0 and d_sharpe > 0
-        print(f"\n  vs Baseline → ΔAPY: {d_apy:+.4f}% | ΔSharpe: {d_sharpe:+.4f} | ΔNoise: {d_noise:+.4f}")
+        print(f"  vs Baseline → ΔAPY: {d_apy:+.4f}% | ΔSharpe: {d_sharpe:+.4f} | ΔNoise: {d_noise:+.4f}")
         print(f"  → {'✓ IMPROVEMENT' if improved else '✗ NO IMPROVEMENT'}")
 
     print(f"\n  Top features:")
