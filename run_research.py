@@ -342,6 +342,13 @@ def run_full_comparison(
     # ── Charts ──
     _generate_charts(out, baseline_val, lgbm_val_sim, stat_val, regime_bl, regime_lgbm, fi)
 
+    # ── ONNX export ──
+    lgbm_model.export_onnx(
+        path=str(out / "lgbm_model.onnx"),
+        feature_names=ds["feature_names"],
+        scaler=ds["scaler"],
+    )
+
     print(f"\n[Done] {elapsed:.0f}s | Results → {out}/")
     print("\n=== SUMMARY JSON ===")
     print(json.dumps(summary, indent=2))

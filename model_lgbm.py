@@ -262,6 +262,57 @@ class FundingRateLGBM:
             .reset_index(drop=True)
         )
 
+    def export_onnx(
+        self,
+        path: str,
+        feature_names: list[str],
+        scaler,
+        n_features: int | None = None,
+    ) -> str:
+        """
+        Export model to ONNX + companion model_config.json.
+        Returns path to .onnx file.
+
+        model_config.json contains:
+            - threshold, feature_names
+            - scaler center_ and scale_ (for RobustScaler reconstruction)
+            - entry_threshold_pct, exit_threshold_pct (strategy constants)
+        """
+        import json
+        from pathlib import Path
+        try:
+            from onnxmltools import convert_lightgbm
+            from onnxmltools.convert.common.data_types import FloatTensorType
+        except ImportError:
+            raise ImportError("pip install onnxmltools onnx")
+
+        assert self.model is not None, "Model not fitted"
+
+        n_feat = n_features or len(feature_names)
+        initial_type = [("float_input", FloatTensorType([None, n_feat]))]
+        onnx_model = convert_lightgbm(self.model, initial_types=initial_type, target_opset=12)
+
+        onnx_path = Path(path)
+        onnx_path.write_bytes(onnx_model.SerializeToString())
+
+        # Companion config
+        from data_loader import ENTRY_THRESHOLD_PCT
+        from simulation_v2 import EXIT_THRESHOLD
+        config = {
+            "threshold":          self.threshold,
+            "feature_names":      feature_names,
+            "entry_threshold_pct": ENTRY_THRESHOLD_PCT,
+            "exit_threshold_pct":  EXIT_THRESHOLD,
+            "scaler_center":      scaler.center_.tolist(),
+            "scaler_scale":       scaler.scale_.tolist(),
+        }
+        config_path = onnx_path.with_suffix(".json")
+        config_path.write_text(json.dumps(config, indent=2))
+
+        print(f"[ONNX] Saved model → {onnx_path}")
+        print(f"[ONNX] Saved config → {config_path}")
+        return str(onnx_path)
+
 
 # ── RF Sanity Check ───────────────────────────────────────────────────────────
 
