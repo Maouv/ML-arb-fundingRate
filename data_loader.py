@@ -72,6 +72,11 @@ FEATURE_COLS_EXTENDED: list[str] = FEATURE_COLS_CORE + [
     "fr_sign",
     "cs_rank",
     "fr_zscore_M",
+    "cs_n_above",
+    "hour_sin",
+    "hour_cos",
+    "dow_sin",
+    "dow_cos",
 ]
 
 # Default: start with extended, ablate to core if overfitting detected
@@ -160,6 +165,19 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
         combined.groupby("timestamp")["fr_abs"]
         .rank(pct=True, method="average")
     )
+
+    # Cross-sectional count: how many coins have |FR| >= entry threshold at this timestamp
+    # High count = market-wide event (less alpha per coin); low count = idiosyncratic (more alpha)
+    combined["cs_n_above"] = combined.groupby("timestamp")["fr_abs"].transform(
+        lambda x: (x >= ENTRY_THRESHOLD_PCT).sum()
+    )
+
+    # Time features (cyclical encoding — no leakage, known at decision time)
+    ts = combined["timestamp"]
+    combined["hour_sin"] = np.sin(2 * np.pi * ts.dt.hour / 24).astype(np.float32)
+    combined["hour_cos"] = np.cos(2 * np.pi * ts.dt.hour / 24).astype(np.float32)
+    combined["dow_sin"]  = np.sin(2 * np.pi * ts.dt.dayofweek / 7).astype(np.float32)
+    combined["dow_cos"]  = np.cos(2 * np.pi * ts.dt.dayofweek / 7).astype(np.float32)
 
     return combined.sort_values(["timestamp", "symbol"]).reset_index(drop=True)
 

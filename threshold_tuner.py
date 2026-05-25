@@ -33,8 +33,8 @@ def tune_threshold_on_train(
     model,
     X_train_last_fold: np.ndarray,
     y_train_last_fold: np.ndarray,
-    min_precision: float = 0.45,
-    min_recall: float = 0.60,
+    min_precision: float = 0.70,
+    min_recall: float = 0.40,
 ) -> float:
     """
     Tune classification threshold on held-out train fold.
@@ -52,8 +52,8 @@ def tune_threshold_on_train(
     model                  : fitted model with predict_proba(X)
     X_train_last_fold      : features for threshold-tuning holdout
     y_train_last_fold      : labels for threshold-tuning holdout
-    min_precision          : minimum acceptable precision (default 0.45)
-    min_recall             : minimum acceptable recall (default 0.60)
+    min_precision          : minimum acceptable precision (default 0.70)
+    min_recall             : minimum acceptable recall (default 0.40)
 
     Returns
     -------
