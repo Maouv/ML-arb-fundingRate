@@ -90,6 +90,85 @@ def run_sanity_checks(train_sim: dict, val_sim: dict, name: str) -> list[str]:
     return warnings_out
 
 
+# ── Charts ────────────────────────────────────────────────────────────────────
+
+def _generate_charts(out, baseline, lgbm_sim, stat_val, regime_bl, regime_lgbm, fi):
+    """Generate PNG charts for Kaggle display."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    # 1. Strategy comparison bar chart
+    fig, axes = plt.subplots(1, 3, figsize=(14, 4))
+    metrics = ["apy_pct", "sharpe", "win_rate"]
+    titles = ["APY (%)", "Sharpe Ratio", "Win Rate"]
+    for ax, m, t in zip(axes, metrics, titles):
+        vals = [baseline[m], lgbm_sim[m]]
+        ax.bar(["Baseline", "LGBM"], vals, color=["#888", "#2196F3"])
+        ax.set_title(t)
+        for i, v in enumerate(vals):
+            ax.text(i, v, f"{v:.2f}", ha="center", va="bottom", fontsize=9)
+    fig.suptitle("Baseline vs LGBM", fontweight="bold")
+    fig.tight_layout()
+    fig.savefig(out / "comparison.png", dpi=120)
+    plt.close(fig)
+
+    # 2. Feature importance
+    fig, ax = plt.subplots(figsize=(8, 5))
+    top = fi.head(10)
+    ax.barh(top["feature"][::-1], top["importance"][::-1], color="#4CAF50")
+    ax.set_title("Top 10 Feature Importance")
+    fig.tight_layout()
+    fig.savefig(out / "feature_importance.png", dpi=120)
+    plt.close(fig)
+
+    # 3. Regime breakdown
+    fig, ax = plt.subplots(figsize=(8, 4))
+    regimes = regime_bl["regime"].values
+    x = np.arange(len(regimes))
+    w = 0.35
+    ax.bar(x - w/2, regime_bl["apy_pct"].values, w, label="Baseline", color="#888")
+    ax.bar(x + w/2, regime_lgbm["apy_pct"].values, w, label="LGBM", color="#2196F3")
+    ax.set_xticks(x)
+    ax.set_xticklabels(regimes)
+    ax.set_ylabel("APY (%)")
+    ax.set_title("APY by Market Regime")
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(out / "regime_apy.png", dpi=120)
+    plt.close(fig)
+
+    # 4. Cost Monte Carlo distribution
+    if stat_val.get("cost_mc"):
+        mc = stat_val["cost_mc"]
+        fig, ax = plt.subplots(figsize=(6, 4))
+        info = f"Mean: {mc['apy_mean']:.1f}%\n5th: {mc['apy_5th']:.1f}%\n95th: {mc['apy_95th']:.1f}%"
+        ax.text(0.5, 0.5, info, transform=ax.transAxes, fontsize=14,
+                va="center", ha="center", family="monospace",
+                bbox=dict(boxstyle="round", facecolor="#e3f2fd"))
+        ax.set_title("Cost Monte Carlo (±30%) — APY Range")
+        ax.axis("off")
+        fig.tight_layout()
+        fig.savefig(out / "cost_mc.png", dpi=120)
+        plt.close(fig)
+
+    # 5. Cumulative PnL curve
+    trade_df = lgbm_sim.get("trade_df", pd.DataFrame())
+    if not trade_df.empty:
+        fig, ax = plt.subplots(figsize=(10, 4))
+        cum_pnl = trade_df.sort_values("exit_ts")["net_pct"].cumsum()
+        ax.plot(cum_pnl.values, color="#2196F3", linewidth=1.5)
+        ax.axhline(0, color="gray", linestyle="--", linewidth=0.8)
+        ax.set_xlabel("Trade #")
+        ax.set_ylabel("Cumulative Net (%)")
+        ax.set_title("LGBM Equity Curve (Val)")
+        fig.tight_layout()
+        fig.savefig(out / "equity_curve.png", dpi=120)
+        plt.close(fig)
+
+    print(f"[charts] Saved PNGs → {out}/")
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def run_full_comparison(
@@ -227,6 +306,15 @@ def run_full_comparison(
     print("\nBaseline by regime:\n", regime_bl.to_string(index=False))
     print("\nLGBM by regime:\n",     regime_lgbm.to_string(index=False))
 
+    # ── 6. Statistical validation ──
+    from statistical_validation import run_full_statistical_validation
+    stat_val = run_full_statistical_validation(
+        df=full_val_df,
+        signal=lgbm_val_sig,
+        sim_metrics=lgbm_val_sim,
+        cost_tier=cost_tier,
+    )
+
     # Save
     regime_bl.to_csv(out   / "regime_baseline.csv", index=False)
     regime_lgbm.to_csv(out / "regime_lgbm.csv",     index=False)
@@ -246,9 +334,14 @@ def run_full_comparison(
         "auc_gap":           float(auc_gap),
         "lgbm_threshold":    float(lgbm_model.threshold),
         "lgbm_warnings":     lgbm_warnings,
+        "statistical_validation": stat_val,
         "elapsed_seconds":   round(elapsed, 1),
     }
     (out / "summary.json").write_text(json.dumps(summary, indent=2))
+
+    # ── Charts ──
+    _generate_charts(out, baseline_val, lgbm_val_sim, stat_val, regime_bl, regime_lgbm, fi)
+
     print(f"\n[Done] {elapsed:.0f}s | Results → {out}/")
     print("\n=== SUMMARY JSON ===")
     print(json.dumps(summary, indent=2))
